@@ -25,22 +25,21 @@ Tools:
 * Git % Github
 * VS Code
 
-## Project Structure
-
 ## 📦 ▶️ Installation & Running Application
 
 ## 📊 Dataset
 
+## 🧪 Model Training & Evaluation
+
 ## ⚖️ Ethical Consideration - LSEPI
 
 ## 🧑‍🤝‍🧑 🗓️ Team & Project Status
-## 👥 Team
 
 | Member | Role |
 |------|------|
-| Ozan | Frontend |
-| Majd | Frontend |
-| Mohammad | Backend |
-| Martin     |     Backend |
+| Ozan | Backend |
+| Majd | Backend |
+| Mohammad | Frotend|
+| Martin | Frontend |
 
 
