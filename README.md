@@ -1,2 +1,46 @@
-# Nautilus
-Nautilus Project
+# 🐚 Nautilus — Facial Recognition & Emotion Detection
+
+## 📌 Project Overview
+#### Nautilus is a computer vision project for building a real-time facial recognition and emotion detection system.
+
+Nautilus aims to perform:
+* Facial Recongition - Identifies individuals from a live camera feed or from an image.
+* Emotion Detection - Detects facial expressions and categorise them accordingly (sad, happy, angry etc)
+
+The project demonstrates practical use of machine learning, deep learning, computer vision and
+real time inference.
+
+## 🚀 Features
+
+## 🛠️ Tech Stack
+
+Language(s):
+* Python
+
+Libaries / Frameworks:
+* DeepFace
+* Streamlit
+
+Tools:
+* Git % Github
+* VS Code
+
+## Project Structure
+
+## 📦 ▶️ Installation & Running Application
+
+## 📊 Dataset
+
+## ⚖️ Ethical Consideration - LSEPI
+
+## 🧑‍🤝‍🧑 🗓️ Team & Project Status
+## 👥 Team
+
+| Member | Role |
+|------|------|
+| Ozan | Frontend |
+| Majd | Frontend |
+| Mohammad | Backend |
+| Martin     |     Backend |
+
+
