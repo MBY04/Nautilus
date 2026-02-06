@@ -39,7 +39,7 @@ Tools:
 |------|------|
 | Ozan | Backend |
 | Majd | Backend |
-| Mohammad | Frotend|
+| Mohammad | Frontend|
 | Martin | Frontend |
 
 
