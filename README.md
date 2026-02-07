@@ -13,6 +13,7 @@ real time inference.
 ## 🚀 How to Run
 
 Install dependencies: pip install streamlit pandas pillow
+
 Run the app: python -m streamlit run app.py
 
 ## 🛠️ Tech Stack
