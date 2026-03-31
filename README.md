@@ -23,7 +23,11 @@ Language(s):
 
 Libaries / Frameworks:
 * DeepFace
+* MediaPipe
+* Numpy
+* OpenCV
 * Streamlit
+* Streamlit-webrtc
 * Panda
 * Pillow
 
@@ -43,7 +47,7 @@ Tools:
 | Member | Role |
 |------|------|
 | Ozan | Backend |
-| Majd | Backend |
+| Majed | Backend |
 | Mohammad | Frontend|
 | Martin | Frontend |
 

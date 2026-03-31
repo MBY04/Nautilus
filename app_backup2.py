@@ -5,16 +5,9 @@ import json
 import pandas as pd
 import cv2
 import numpy as np
-import time
-import av
-import threading
-import mediapipe as mp
 from PIL import Image
 from io import BytesIO
 from deepface import DeepFace
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode, VideoHTMLAttributes
 
 # --- 1. SETUP & CONFIGURATION ---
 LOGO_PATH = "images/NautilusLogoDesign.png"
@@ -539,119 +532,61 @@ def training_page():
     else:
         st.info("No face database found. Start by registering a person above.")
 
-
-detected_faces = []
-emotion = "Loading..."
-race = ""
-gender = ""
-age = ""
-scan = False
-
 def live_emotion_page():
     st.title("🎭 Live Emotion Detection")
     st.write("Capture frames from your webcam to detect emotions in real time.")
-    st.caption("Each captured frame is analysed for faces and emotions. Press the start button to begin." )
+    st.caption("Each captured frame is analysed for faces and emotions. "
+               "A green bounding box is drawn around detected faces with the emotion label.")
 
     st.divider()
 
-    # Mediapipe setup.
-    base_options = mp.tasks.BaseOptions
-    vision_mode = mp.tasks.vision.RunningMode
+    # Camera input — each time the user takes a photo, it's analysed
+    img_file = st.camera_input("📷 Capture a frame for emotion analysis", key="live_emotion_cam")
 
-    face_detector = mp.tasks.vision.FaceDetector
-    face_detector_options = mp.tasks.vision.FaceDetectorOptions
-    face_detector_results = mp.tasks.vision.FaceDetectorResult
+    if img_file is not None:
+        # Convert to OpenCV
+        pil_img = Image.open(img_file)
+        cv2_img = pil_to_cv2(pil_img)
 
-    def detection_result(result: face_detector_results, output_image: mp.Image, timestamp_ms: int):
-        global detected_faces
-        detected_faces = result.detections if result.detections else []
+        with st.spinner("Analysing emotions..."):
+            annotated_img, results, error = annotate_faces(cv2_img)
 
-    def deepface_analysis(img):
-        global scan, emotion, race, gender, age
-        analyze_face = DeepFace.analyze(
-            img_path=img,
-            enforce_detection=False,
-            detector_backend='skip',
-            actions=['age', 'gender', 'emotion', 'race'],
-        )
-        analyze_face = analyze_face[0]
-        emotion = analyze_face["dominant_emotion"]
-        race = analyze_face["dominant_race"]
-        gender = analyze_face["dominant_gender"]
-        age = analyze_face["age"]
-        scan = False
+        col1, col2 = st.columns([1.2, 0.8])
 
-    # Configerations for the face detector.
-    config = face_detector_options(
-        base_options = base_options(model_asset_path = "Models/blaze_face_short_range.tflite"),
-        running_mode = vision_mode.LIVE_STREAM, result_callback = detection_result
-    )
+        with col1:
+            annotated_pil = cv2_to_pil(annotated_img)
+            st.image(annotated_pil, caption="Live Analysis", use_container_width=True)
 
-    class liveDetection(VideoProcessorBase):
-        def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-                global scan
-                with face_detector.create_from_options(config) as detector:
+        with col2:
+            if error:
+                st.error(f"Error: {error}")
+            elif results:
+                for i, face in enumerate(results):
+                    emotion = face.get('dominant_emotion', 'N/A')
+                    age = face.get('age', '?')
+                    gender = face.get('dominant_gender', '?')
                     
-                    img = frame.to_ndarray(format="bgr24")
+                    st.markdown(f"""
+                    ### Face #{i+1}
+                    | Attribute | Value |
+                    |-----------|-------|
+                    | **Emotion** | {emotion} |
+                    | **Age** | {age} |
+                    | **Gender** | {gender} |
+                    """)
                     
-                    img_to_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    mp_frame = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_to_rgb)
-                    
-                    timestamp_ms =int(time.time()*1000)
-                    
-                    detector.detect_async(mp_frame, timestamp_ms)
-                    
-                    for detection in detected_faces:
-                        box = detection.bounding_box
-                        x = int(box.origin_x)
-                        y = int(box.origin_y)
-                        w = int(box.width)
-                        h = int(box.height)
-                        
-                        cv2.rectangle(img, (x,y), (x+w, y+h), (255,127,0), 2)
-                        description = f"{emotion}, {race}, {gender}, {age}"
-                        
-                        face_crop = img[y:y+h, x:x+w]
-                        
-                        if not scan:
-                            scan = True
-                            deepface_thread = threading.Thread(target=deepface_analysis, args=(face_crop,))
-                            deepface_thread.start()
-
-                        cv2.putText(
-                            img,
-                            description,
-                            (x, y + 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            (255,45,127),
-                            3,
-                            cv2.LINE_AA
-                        )
-                        return av.VideoFrame.from_ndarray(img, format="bgr24")
-                    
-    rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.1.google.com:19302"]}]})
-    webrtc_streamer(
-        key="live_cam",
-        mode=WebRtcMode.SENDRECV,
-        video_processor_factory=liveDetection, 
-        media_stream_constraints={"video": {"width":1280, "height":720, "frameRate": {"ideal": 18} }, "audio": False}, 
-        rtc_configuration=rtc_config, 
-        video_html_attrs=VideoHTMLAttributes(
-            style={
-                "width": "100vw",
-                "maxWidth": "100%",
-                "height": "auto",
-                "objectFit": "cover",
-                "display": "block"
-            },
-            autoPlay=True,
-            controls=True,
-            controlsList="nofullscreen",
-            muted=True
-        )
-    )
-
+                    # Mini emotion bars
+                    emotions = face.get('emotion', {})
+                    if emotions:
+                        top_3 = sorted(emotions.items(), key=lambda x: x[1], reverse=True)[:3]
+                        for emo_name, emo_val in top_3:
+                            st.progress(emo_val / 100, text=f"{emo_name}: {emo_val:.1f}%")
+            else:
+                st.info("No faces detected. Try adjusting your position.")
+        
+        st.caption("💡 **Tip:** Click the camera button again to capture another frame and see updated emotions!")
+    else:
+        st.info("👆 Click the camera button above to start capturing frames.")
 
 def storage_page():
     st.title("📂 Data Storage")
