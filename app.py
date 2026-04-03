@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import time
 import av
+import shutil
 import threading
 import mediapipe as mp
 from PIL import Image
@@ -525,7 +526,6 @@ def training_page():
                             st.caption(f"... and {len(images) - 4} more image(s)")
                     
                     if st.button(f"🗑️ Delete {person}", key=f"del_{person}"):
-                        import shutil
                         shutil.rmtree(person_path)
                         # Clear pkl cache
                         pkl_files = [f for f in os.listdir(user_db_path) if f.endswith('.pkl')]
@@ -540,103 +540,135 @@ def training_page():
         st.info("No face database found. Start by registering a person above.")
 
 
-detected_faces = []
-emotion = "Loading..."
-race = ""
-gender = ""
-age = ""
-scan = False
+# --- LIVE DETECTION CLASS (module-level for efficiency) ---
+# MediaPipe class references cached at module level to avoid repeated attribute
+# lookups on every Streamlit rerun.
+_MP_BASE_OPTIONS = mp.tasks.BaseOptions
+_MP_VISION_MODE = mp.tasks.vision.RunningMode
+_MP_FACE_DETECTOR_CLASS = mp.tasks.vision.FaceDetector
+_MP_FACE_DETECTOR_OPTIONS = mp.tasks.vision.FaceDetectorOptions
+_BLAZEFACE_MODEL = "models/blaze_face_short_range.tflite"
+
+
+class LiveDetection(VideoProcessorBase):
+    """
+    WebRTC video processor for real-time face detection and emotion analysis.
+
+    Key design decisions:
+    - The MediaPipe FaceDetector is created once in __init__ (not per-frame).
+      Creating/destroying a TFLite model every frame added ~100 ms overhead at
+      18 fps, which was the primary performance bottleneck.
+    - All shared state between the MediaPipe callback thread and the recv()
+      thread is protected by a single threading.Lock.
+    - DeepFace analysis runs in a daemon thread so the video pipeline is never
+      blocked waiting for inference results.
+    - At most one DeepFace thread is active at a time (guarded by _scanning).
+    - The frame is always returned, even when no faces are present.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._detected_faces = []
+        self._emotion = "Loading..."
+        self._scanning = False
+
+        config = _MP_FACE_DETECTOR_OPTIONS(
+            base_options=_MP_BASE_OPTIONS(model_asset_path=_BLAZEFACE_MODEL),
+            running_mode=_MP_VISION_MODE.LIVE_STREAM,
+            result_callback=self._on_detection,
+        )
+        self._detector = _MP_FACE_DETECTOR_CLASS.create_from_options(config)
+
+    def _on_detection(self, result, output_image, timestamp_ms: int):
+        with self._lock:
+            self._detected_faces = result.detections if result.detections else []
+
+    def _run_deepface(self, face_crop: np.ndarray):
+        try:
+            # DeepFace needs a reasonably sized image to work
+            h, w = face_crop.shape[:2]
+            if h < 10 or w < 10:
+                return
+            # Resize small crops so DeepFace models can process them
+            if h < 48 or w < 48:
+                face_crop = cv2.resize(face_crop, (224, 224))
+
+            result = DeepFace.analyze(
+                img_path=face_crop,
+                enforce_detection=False,
+                detector_backend='skip',
+                actions=['emotion'],
+            )[0]
+            with self._lock:
+                self._emotion = result.get("dominant_emotion", "N/A")
+        except Exception as e:
+            print(f"[DeepFace Error] {e}")
+            with self._lock:
+                self._emotion = "Error"
+        finally:
+            with self._lock:
+                self._scanning = False
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+
+        # Feed frame to MediaPipe asynchronously; result arrives via _on_detection
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        mp_frame = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        self._detector.detect_async(mp_frame, int(time.time() * 1000))
+
+        # Snapshot shared state under lock to avoid holding it during drawing
+        with self._lock:
+            faces = list(self._detected_faces)
+            label = self._emotion
+            can_scan = not self._scanning
+
+        for detection in faces:
+            box = detection.bounding_box
+            x, y = int(box.origin_x), int(box.origin_y)
+            w, h = int(box.width), int(box.height)
+
+            cv2.rectangle(img, (x, y), (x + w, y + h), (255, 127, 0), 2)
+            cv2.putText(img, label, (x, y + 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 45, 127), 3, cv2.LINE_AA)
+
+            # Launch one DeepFace daemon thread per frame cycle
+            if can_scan:
+                # Clamp coordinates to image boundaries
+                ih, iw = img.shape[:2]
+                x1 = max(0, x)
+                y1 = max(0, y)
+                x2 = min(iw, x + w)
+                y2 = min(ih, y + h)
+                face_crop = img[y1:y2, x1:x2]
+                if face_crop.size > 0:
+                    with self._lock:
+                        self._scanning = True
+                    threading.Thread(
+                        target=self._run_deepface,
+                        args=(face_crop.copy(),),
+                        daemon=True
+                    ).start()
+                    can_scan = False  # one analysis thread per frame
+
+        # Always return the frame (annotated or plain)
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
 
 def live_emotion_page():
     st.title("🎭 Live Emotion Detection")
     st.write("Capture frames from your webcam to detect emotions in real time.")
-    st.caption("Each captured frame is analysed for faces and emotions. Press the start button to begin." )
+    st.caption("Each captured frame is analysed for faces and emotions. Press the start button to begin.")
 
     st.divider()
 
-    # Mediapipe setup.
-    base_options = mp.tasks.BaseOptions
-    vision_mode = mp.tasks.vision.RunningMode
-
-    face_detector = mp.tasks.vision.FaceDetector
-    face_detector_options = mp.tasks.vision.FaceDetectorOptions
-    face_detector_results = mp.tasks.vision.FaceDetectorResult
-
-    def detection_result(result: face_detector_results, output_image: mp.Image, timestamp_ms: int):
-        global detected_faces
-        detected_faces = result.detections if result.detections else []
-
-    def deepface_analysis(img):
-        global scan, emotion, race, gender, age
-        analyze_face = DeepFace.analyze(
-            img_path=img,
-            enforce_detection=False,
-            detector_backend='skip',
-            actions=['age', 'gender', 'emotion', 'race'],
-        )
-        analyze_face = analyze_face[0]
-        emotion = analyze_face["dominant_emotion"]
-        race = analyze_face["dominant_race"]
-        gender = analyze_face["dominant_gender"]
-        age = analyze_face["age"]
-        scan = False
-
-    # Configerations for the face detector.
-    config = face_detector_options(
-        base_options = base_options(model_asset_path = "Models/blaze_face_short_range.tflite"),
-        running_mode = vision_mode.LIVE_STREAM, result_callback = detection_result
-    )
-
-    class liveDetection(VideoProcessorBase):
-        def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-                global scan
-                with face_detector.create_from_options(config) as detector:
-                    
-                    img = frame.to_ndarray(format="bgr24")
-                    
-                    img_to_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    mp_frame = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_to_rgb)
-                    
-                    timestamp_ms =int(time.time()*1000)
-                    
-                    detector.detect_async(mp_frame, timestamp_ms)
-                    
-                    for detection in detected_faces:
-                        box = detection.bounding_box
-                        x = int(box.origin_x)
-                        y = int(box.origin_y)
-                        w = int(box.width)
-                        h = int(box.height)
-                        
-                        cv2.rectangle(img, (x,y), (x+w, y+h), (255,127,0), 2)
-                        description = f"{emotion}, {race}, {gender}, {age}"
-                        
-                        face_crop = img[y:y+h, x:x+w]
-                        
-                        if not scan:
-                            scan = True
-                            deepface_thread = threading.Thread(target=deepface_analysis, args=(face_crop,))
-                            deepface_thread.start()
-
-                        cv2.putText(
-                            img,
-                            description,
-                            (x, y + 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            (255,45,127),
-                            3,
-                            cv2.LINE_AA
-                        )
-                        return av.VideoFrame.from_ndarray(img, format="bgr24")
-                    
-    rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.1.google.com:19302"]}]})
+    rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun1.l.google.com:19302"]}]})
     webrtc_streamer(
         key="live_cam",
         mode=WebRtcMode.SENDRECV,
-        video_processor_factory=liveDetection, 
-        media_stream_constraints={"video": {"width":1280, "height":720, "frameRate": {"ideal": 18} }, "audio": False}, 
-        rtc_configuration=rtc_config, 
+        video_processor_factory=LiveDetection,
+        media_stream_constraints={"video": {"width": 1280, "height": 720, "frameRate": {"ideal": 18}}, "audio": False},
+        rtc_configuration=rtc_config,
         video_html_attrs=VideoHTMLAttributes(
             style={
                 "width": "100vw",
