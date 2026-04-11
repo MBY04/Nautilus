@@ -12,7 +12,7 @@ real time inference.
 
 ## 🚀 How to Run
 
-Install dependencies: pip install streamlit pandas pillow
+Install dependencies: pip install streamlit pandas pillow deepface mediapipe streamlit-webrtc
 
 Run the app: python -m streamlit run app.py
 
